@@ -41,7 +41,6 @@ struct Matrix {
 #define MATRIX_PRINT(m)    Matrix_print(m, #m, 0)
 
 struct Matrix Matrix_create(size_t rows, size_t cols);
-void          Matrix_destroy(struct Matrix mat);
 void          Matrix_copy(struct Matrix dst, struct Matrix src);
 struct Matrix Matrix_row(struct Matrix mat, size_t row);
 void          Matrix_fill(struct Matrix mat, float value);
@@ -63,12 +62,13 @@ struct NeuNet {
 #define NEUNET_PRINT(m)   NeuNet_print(m, #m)
 
 struct NeuNet NeuNet_create(size_t *arch, size_t arch_size);
-void          NeuNet_destroy(struct NeuNet nn);
+void          NeuNet_clear(struct NeuNet nn);
 void          NeuNet_rand(struct NeuNet nn, float low, float high);
 void          NeuNet_forward(struct NeuNet nn);
 float         NeuNet_cost(struct NeuNet nn, struct Matrix ti, struct Matrix to);
 void          NeuNet_fiiff(struct NeuNet nn, struct NeuNet g, float eps, struct Matrix ti, struct Matrix to);
 void          NeuNet_learn(struct NeuNet nn, struct NeuNet g, float rate);
+void          NeuNet_backprop(struct NeuNet nn, struct NeuNet g, struct Matrix ti, struct Matrix to);
 void          NeuNet_print(struct NeuNet mat, const char *name);
 
 #endif // NCL_H
@@ -94,10 +94,6 @@ struct Matrix Matrix_create(size_t rows, size_t cols) {
         };
         NCL_ASSERT(m.arr != NULL);
         return m;
-}
-
-void Matrix_destroy(struct Matrix mat) {
-        if(mat.arr) NCL_FREE(mat.arr);
 }
 
 void Matrix_copy(struct Matrix dst, struct Matrix src) {
@@ -210,22 +206,13 @@ struct NeuNet NeuNet_create(size_t *arch, size_t arch_size) {
         return ret;
 }
 
-void NeuNet_destroy(struct NeuNet nn) {
-        NCL_ASSERT(nn.ws);
-        NCL_ASSERT(nn.bs);
-        NCL_ASSERT(nn.as);
-
-        Matrix_destroy(nn.as[0]);
-
-        for(size_t i = 1; i < nn.count + 1; i++) {
-                Matrix_destroy(nn.ws[i - 1]);
-                Matrix_destroy(nn.bs[i - 1]);
-                Matrix_destroy(nn.as[i]);
+void NeuNet_clear(struct NeuNet nn) {
+        for(size_t i = 0; i < nn.count; i++) {
+                Matrix_fill(nn.ws[i], 0);
+                Matrix_fill(nn.bs[i], 0);
+                Matrix_fill(nn.as[i], 0);
         }
-
-         NCL_FREE(nn.ws);
-         NCL_FREE(nn.bs);
-         NCL_FREE(nn.as);
+        Matrix_fill(nn.as[nn.count], 0);
 }
 
 void NeuNet_rand(struct NeuNet nn, float low, float high) {
@@ -282,6 +269,46 @@ void NeuNet_fiiff(struct NeuNet nn, struct NeuNet g, float eps, struct Matrix ti
                                 MATRIX_AT(nn.bs[i], j, k) += eps;
                                 MATRIX_AT(g.bs[i], j, k) = (NeuNet_cost(nn, ti, to) - c) / eps;
                                 MATRIX_AT(nn.bs[i], j, k) = saved;
+                        }
+                }
+        }
+}
+
+void NeuNet_backprop(struct NeuNet nn, struct NeuNet g, struct Matrix ti, struct Matrix to) {
+        NCL_ASSERT(ti.rows == to.rows);
+        NCL_ASSERT(to.cols == NEUNET_OUTPUT(nn).cols);
+        NeuNet_clear(g);
+        size_t n = ti.rows;
+        for(size_t i = 0; i < n; i++) {
+                Matrix_copy(NEUNET_INPUT(nn), Matrix_row(ti, i));
+                NeuNet_forward(nn);
+                for(size_t j = 0; j <= nn.count; j++) Matrix_fill(g.as[j], 0);
+                for(size_t j = 0; j < to.cols; j++) {
+                        MATRIX_AT(NEUNET_OUTPUT(g), 0, j) = MATRIX_AT(NEUNET_OUTPUT(nn), 0, j) - MATRIX_AT(to, i, j);
+                }
+                for(size_t l = nn.count; l > 0; l--) {
+                        for(size_t j = 0; j < nn.as[l].cols; j++) {
+                                float a = MATRIX_AT(nn.as[l], 0, j);
+                                float da = MATRIX_AT(g.as[l], 0, j);
+                                MATRIX_AT(g.bs[l - 1], 0, j) += 2 * da * a * (1 - a);
+                                for(size_t k = 0; k < nn.as[l - 1].cols; k++) {
+                                        float pa = MATRIX_AT(nn.as[l - 1], 0, k);
+                                        float w = MATRIX_AT(nn.ws[l - 1], k, j);
+                                        MATRIX_AT(g.ws[l - 1], k, j) += 2 * da * a * (1 - a) * pa;
+                                        MATRIX_AT(g.as[l - 1], 0, k) += 2 * da * a * (1 - a) * w;
+                                }
+                        }
+                }
+        }
+        for(size_t i = 0; i < g.count; i++) {
+                for(size_t j = 0; j < g.ws[i].rows; j++) {
+                        for(size_t k = 0; k < g.ws[i].cols; k++) {
+                                MATRIX_AT(g.ws[i], j, k) /= n;
+                        }
+                }
+                for(size_t j = 0; j < g.bs[i].rows; j++) {
+                        for(size_t k = 0; k < g.bs[i].cols; k++) {
+                                MATRIX_AT(g.bs[i], j, k) /= n;
                         }
                 }
         }
